@@ -110,18 +110,15 @@ public class HubConnectionBuilder {
         let connection = connection ?? HttpConnection(url: url, options: httpConnectionOptions)
         let logger = Logger(logLevel: logLevel, logHandler: logHandler ?? DefaultLogHandler())
         let hubProtocol: HubProtocol
-        if let configuredProtocol = hubProtocol {
-            if configuredProtocol is MessagePackHubProtocol {
-                hubProtocol = MessagePackHubProtocol(
-                    logger: logger,
-                    logMessagePackPayloads: logMessagePackPayloads
-                )
-            } else {
-                hubProtocol = configuredProtocol
-            }
+        if self.hubProtocol is MessagePackHubProtocol {
+            hubProtocol = MessagePackHubProtocol(
+                logger: logger,
+                logMessagePackPayloads: logMessagePackPayloads
+            )
         } else {
             hubProtocol = JsonHubProtocol()
         }
+       
         let retryPolicy = retryPolicy ?? DefaultRetryPolicy(retryDelays: []) // No retry by default
 
         return HubConnection(connection: connection,
