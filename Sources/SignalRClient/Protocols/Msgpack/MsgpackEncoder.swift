@@ -395,7 +395,27 @@ extension MsgpackElement: MsgpackElementConvertable {
     }
 
     private static func encodeString(_ v: String) throws -> Data {
-        Data(v.utf8)
+        let content = v.data(using: .utf8)!
+        let length = content.count
+        if length < 1 << 5 {
+            return [0xa0 | UInt8(length)] + content
+        }
+        if length <= UInt8.max {
+            return [0xd9, UInt8(length)] + content
+        }
+        if length <= UInt16.max {
+            var uint16 = UInt16(length).bigEndian
+            return [0xda]
+                + Data(bytes: &uint16, count: MemoryLayout<UInt16>.size)
+                + content
+        }
+        if length <= UInt32.max {
+            var uint32 = UInt32(length).bigEndian
+            return [0xdb]
+                + Data(bytes: &uint32, count: MemoryLayout<UInt32>.size)
+                + content
+        }
+        throw MsgpackEncodingError.stringTooLarge
     }
 
     private static func encodeBool(_ v: Bool) -> Data {
