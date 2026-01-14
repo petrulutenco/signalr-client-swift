@@ -8,6 +8,7 @@ public class HubConnectionBuilder {
     private var logHandler: LogHandler?
     private var logLevel: LogLevel?
     private var hubProtocol: HubProtocol?
+    private var logMessagePackPayloads: Bool = false
     private var serverTimeout: TimeInterval?
     private var keepAliveInterval: TimeInterval?
     private var url: String?
@@ -35,6 +36,11 @@ public class HubConnectionBuilder {
         case .messagePack:
             self.hubProtocol = MessagePackHubProtocol()
         }
+        return self
+    }
+
+    public func withMessagePackPayloadLogging(enabled: Bool) -> HubConnectionBuilder {
+        self.logMessagePackPayloads = enabled
         return self
     }
 
@@ -103,7 +109,19 @@ public class HubConnectionBuilder {
 
         let connection = connection ?? HttpConnection(url: url, options: httpConnectionOptions)
         let logger = Logger(logLevel: logLevel, logHandler: logHandler ?? DefaultLogHandler())
-        let hubProtocol = hubProtocol ?? JsonHubProtocol()
+        let hubProtocol: HubProtocol
+        if let configuredProtocol = hubProtocol {
+            if configuredProtocol is MessagePackHubProtocol {
+                hubProtocol = MessagePackHubProtocol(
+                    logger: logger,
+                    logMessagePackPayloads: logMessagePackPayloads
+                )
+            } else {
+                hubProtocol = configuredProtocol
+            }
+        } else {
+            hubProtocol = JsonHubProtocol()
+        }
         let retryPolicy = retryPolicy ?? DefaultRetryPolicy(retryDelays: []) // No retry by default
 
         return HubConnection(connection: connection,

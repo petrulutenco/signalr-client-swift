@@ -7,6 +7,20 @@ final class MessagePackHubProtocol: HubProtocol {
     let name = "messagepack"
     let version = 1
     let transferFormat: TransferFormat = .binary
+    private let logger: Logger?
+    private let logMessagePackPayloads: Bool
+
+    init(logger: Logger? = nil, logMessagePackPayloads: Bool = false) {
+        self.logger = logger
+        self.logMessagePackPayloads = logMessagePackPayloads
+    }
+
+    private func logMessagePackPayload(_ message: @autoclosure () -> String) {
+        guard logMessagePackPayloads, let logger = logger else {
+            return
+        }
+        logger.log(level: .debug, message: LogMessage(stringLiteral: message()))
+    }
 
     func parseMessages(input: StringOrData, binder: any InvocationBinder) throws
     -> [any HubMessage] {
@@ -95,6 +109,9 @@ final class MessagePackHubProtocol: HubProtocol {
         default:
             throw SignalRError.unexpectedMessageType("\(type(of: message))")
         }
+        logMessagePackPayload(
+            "MessagePack outbound payload before encode (type: \(message.type)): \(arr)"
+        )
         let messageData = try MsgpackEncoder().encode(
             AnyEncodableArray(arr))
         return try .data(BinaryMessageFormat.write(messageData))
@@ -102,6 +119,9 @@ final class MessagePackHubProtocol: HubProtocol {
 
     func parseMessage(message: Data, binder: any InvocationBinder)
     throws -> HubMessage? {
+        logMessagePackPayload(
+            "MessagePack inbound payload before decode (\(message.count) bytes): \(message)"
+        )
         let (msgpackElement, _) = try MsgpackElement.parse(data: message)
         let decoder = MsgpackDecoder()
         try decoder.loadMsgpackElement(from: msgpackElement)
