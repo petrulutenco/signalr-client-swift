@@ -34,6 +34,7 @@ public actor HubConnection {
     private var closedHandlers: [(Error?) async -> Void] = []
     private var reconnectingHandlers: [(Error?) async -> Void] = []
     private var reconnectedHandlers: [() async -> Void] = []
+    private var reconnectContinuations: [UUID: CheckedContinuation<Void, Error>] = [:]
 
     private var stopTask: Task<Void, Never>?
     private var startTask: Task<Void, Error>?
@@ -322,8 +323,48 @@ public actor HubConnection {
         }
     }
 
+    private func resolveReconnectWaiters(error: Error?) {
+        let continuations = reconnectContinuations
+        reconnectContinuations.removeAll()
+        if let error {
+            for (_, c) in continuations {
+                c.resume(throwing: error)
+            }
+        } else {
+            for (_, c) in continuations {
+                c.resume()
+            }
+        }
+    }
+
+    private func cancelReconnectWaiter(id: UUID) {
+        if let c = reconnectContinuations.removeValue(forKey: id) {
+            c.resume(throwing: CancellationError())
+        }
+    }
+
     public func state() -> HubConnectionState {
         return connectionStatus
+    }
+
+    public func waitForReconnect() async throws {
+        switch connectionStatus {
+        case .Connected:
+            return
+        case .Stopped, .Connecting:
+            throw SignalRError.invalidOperation("Cannot wait for reconnect when state is \(connectionStatus).")
+        case .Reconnecting:
+            break
+        }
+
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.reconnectContinuations[id] = continuation
+            }
+        } onCancel: {
+            Task { await self.cancelReconnectWaiter(id: id) }
+        }
     }
 
     private func cancelInvocation(invocationId: String) async {
@@ -465,6 +506,7 @@ public actor HubConnection {
 
                 // ConnectionState updated inside
                 await triggerReconnectedHandlers()
+                resolveReconnectWaiters(error: nil)
                 return
             } catch {
                 lastError = error
@@ -632,6 +674,8 @@ public actor HubConnection {
             await self.messageBuffer?.close()
             self.messageBuffer = nil
         }
+
+        resolveReconnectWaiters(error: error ?? SignalRError.connectionAborted)
 
         // Either throw from start(), either call close handlers
         if (startSuccessfully) {
