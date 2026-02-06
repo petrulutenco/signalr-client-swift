@@ -31,6 +31,8 @@ public enum SignalRError: Error, Equatable, CustomStringConvertible {
     case messageBiggerThan2GB
     case unexpectedMessageType(String)
     case streamCancelled
+    case invocationCancelled
+    case invocationTimeout(TimeInterval)
     case serverTimeout(TimeInterval)
 
     public var description: String {
@@ -91,6 +93,10 @@ public enum SignalRError: Error, Equatable, CustomStringConvertible {
             return "Unexpected message type: \(messageType)."
         case .streamCancelled:
             return "Stream cancelled."
+        case .invocationCancelled:
+            return "Invocation was cancelled."
+        case .invocationTimeout(let timeout):
+            return "Invocation timeout. Did not receive a response within \(timeout) seconds."
         case .serverTimeout(let timeout):
             return "Server timeout. Did not receive a message for \(timeout) seconds."
         }

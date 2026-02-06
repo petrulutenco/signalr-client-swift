@@ -13,6 +13,7 @@ public actor HubConnection {
 
     private let serverTimeout: TimeInterval
     private let keepAliveInterval: TimeInterval
+    private let invocationTimeout: TimeInterval?
     private let logger: Logger
     private let hubProtocol: HubProtocol
     private let connection: ConnectionProtocol
@@ -45,9 +46,11 @@ public actor HubConnection {
                   retryPolicy: RetryPolicy,
                   serverTimeout: TimeInterval?,
                   keepAliveInterval: TimeInterval?,
+                  invocationTimeout: TimeInterval?,
                   statefulReconnectBufferSize: Int?) {
         self.serverTimeout = serverTimeout ?? HubConnection.defaultTimeout
         self.keepAliveInterval = keepAliveInterval ?? HubConnection.defaultPingInterval
+        self.invocationTimeout = invocationTimeout
         self.statefulReconnectBufferSize = statefulReconnectBufferSize ?? HubConnection.defaultStatefulReconnectBufferSize
 
         self.logger = logger
@@ -175,10 +178,23 @@ public actor HubConnection {
         let streamIds = await invocationHandler.createClientStreamIds(count: streamArguments.count)
         let (invocationId, tcs) = await invocationHandler.create()
         let invocationMessage = InvocationMessage(target: method, arguments: AnyEncodableArray(nonstreamArguments), streamIds: streamIds, headers: nil, invocationId: invocationId)
-        logger.log(level: .debug, message: "Invoke message to target: \(method), invocationId: \(invocationId)")
-        try await sendWithProtocol(invocationMessage)
-        launchStreams(streamIds: streamIds, clientStreams: streamArguments)
-        _ = try await tcs.task()
+        
+        do {
+            logger.log(level: .debug, message: "Invoke message to target: \(method), invocationId: \(invocationId)")
+            try await sendWithProtocol(invocationMessage)
+            launchStreams(streamIds: streamIds, clientStreams: streamArguments)
+        } catch {
+            await invocationHandler.cancel(invocationId: invocationId, error: error)
+            throw error
+        }
+
+        try await withTaskCancellationHandler {
+            let _: Any? = try await self.awaitInvocationWithTimeout(tcs)
+        } onCancel: {
+            Task {
+                await self.cancelInvocation(invocationId: invocationId)
+            }
+        }
     }
 
     public func invoke<TReturn>(method: String, arguments: Any...) async throws -> TReturn {
@@ -197,7 +213,23 @@ public actor HubConnection {
             throw error
         }
 
-        if let returnVal = (try await tcs.task()) as? TReturn {
+        let result: Any?
+        do {
+            result = try await withTaskCancellationHandler {
+                try await self.awaitInvocationWithTimeout(tcs)
+            } onCancel: {
+                Task {
+                    await self.cancelInvocation(invocationId: invocationId)
+                }
+            }
+        } catch {
+            invocationBinder.removeReturnValueType(invocationId: invocationId)
+            throw error
+        }
+        
+        invocationBinder.removeReturnValueType(invocationId: invocationId)
+        
+        if let returnVal = result as? TReturn {
             return returnVal
         } else {
             throw SignalRError.invalidOperation("Cannot convert the result of the invocation to the specified type.")
@@ -292,6 +324,41 @@ public actor HubConnection {
 
     public func state() -> HubConnectionState {
         return connectionStatus
+    }
+
+    private func cancelInvocation(invocationId: String) async {
+        await invocationHandler.cancel(
+            invocationId: invocationId, 
+            error: CancellationError()
+        )
+        do {
+            let cancelMessage = CancelInvocationMessage(
+                invocationId: invocationId, 
+                headers: nil
+            )
+            try await sendWithProtocol(cancelMessage)
+        } catch {
+            // Connection may already be closed, ignore
+        }
+    }
+
+    private func awaitInvocationWithTimeout<T>(_ tcs: TaskCompletionSource<Any?>) async throws -> T {
+        if let timeout = invocationTimeout {
+            return try await withThrowingTaskGroup(of: Any?.self) { group in
+                group.addTask {
+                    try await tcs.task()
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    throw SignalRError.invocationTimeout(timeout)
+                }
+                let result = try await group.next()!
+                group.cancelAll()
+                return result as! T
+            }
+        } else {
+            return try await tcs.task() as! T
+        }
     }
 
     private func stopInternal() async {
@@ -556,6 +623,11 @@ public actor HubConnection {
         await keepAliveScheduler.stop()
         await serverTimeoutScheduler.stop()
 
+        await invocationHandler.cancelAll(
+            error: error ?? SignalRError.connectionAborted
+        )
+        invocationBinder.removeAllReturnValueTypes()
+
         if (self.messageBuffer != nil) {
             await self.messageBuffer?.close()
             self.messageBuffer = nil
@@ -772,6 +844,12 @@ public actor HubConnection {
             returnValueHandler[invocationId] = nil
         }
 
+        mutating func removeAllReturnValueTypes() {
+            lock.wait()
+            defer { lock.signal() }
+            returnValueHandler.removeAll()
+        }
+
         func getHandler(methodName: String) -> (([Any]) async throws -> Any)? {
             lock.wait()
             defer { lock.signal() }
@@ -864,6 +942,18 @@ public actor HubConnection {
                     continuation.finish(throwing: error)
                 }
             } 
+        }
+
+        func cancelAll(error: Error) async {
+            let allInvocations = invocations
+            invocations.removeAll()
+            for (_, invocation) in allInvocations {
+                if case .Invocation(let tcs) = invocation {
+                    _ = await tcs.trySetResult(.failure(error))
+                } else if case .Stream(let continuation) = invocation {
+                    continuation.finish(throwing: error)
+                }
+            }
         }
 
         private func nextId() -> String {

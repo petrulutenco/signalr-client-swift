@@ -28,6 +28,7 @@ final class HubConnectionOnTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: []), // No retry
             serverTimeout: nil,
             keepAliveInterval: nil,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 

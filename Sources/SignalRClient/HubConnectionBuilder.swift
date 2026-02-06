@@ -11,6 +11,7 @@ public class HubConnectionBuilder {
     private var logMessagePackPayloads: Bool = false
     private var serverTimeout: TimeInterval?
     private var keepAliveInterval: TimeInterval?
+    private var invocationTimeout: TimeInterval?
     private var url: String?
     private var retryPolicy: RetryPolicy?
     private var statefulReconnectBufferSize: Int?
@@ -51,6 +52,11 @@ public class HubConnectionBuilder {
 
     public func withKeepAliveInterval(keepAliveInterval: TimeInterval) -> HubConnectionBuilder {
         self.keepAliveInterval = keepAliveInterval
+        return self
+    }
+
+    public func withInvocationTimeout(_ timeout: TimeInterval) -> HubConnectionBuilder {
+        self.invocationTimeout = timeout
         return self
     }
 
@@ -127,6 +133,7 @@ public class HubConnectionBuilder {
                              retryPolicy: retryPolicy,
                              serverTimeout: serverTimeout,
                              keepAliveInterval: keepAliveInterval,
+                             invocationTimeout: invocationTimeout,
                              statefulReconnectBufferSize: statefulReconnectBufferSize)
     }
 }

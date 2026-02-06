@@ -92,6 +92,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: []), // No retry
             serverTimeout: nil,
             keepAliveInterval: nil,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
         hubConnectionForStatefulReconnect = HubConnection(
@@ -101,6 +102,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: [0, 1, 2]), 
             serverTimeout: nil,
             keepAliveInterval: 0.5,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: 10000
         )
     }
@@ -251,6 +253,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: [1, 2, 3]), // Add some retry, but in this case, it shouldn't have effect
             serverTimeout: nil,
             keepAliveInterval: nil,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 
@@ -280,6 +283,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: []),
             serverTimeout: nil,
             keepAliveInterval: nil,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 
@@ -322,6 +326,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: [0.1, 0.2, 0.3]), // Add some retry
             serverTimeout: nil,
             keepAliveInterval: nil,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 
@@ -390,6 +395,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: [0.1, 0.2]), // Limited retries
             serverTimeout: nil,
             keepAliveInterval: nil,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 
@@ -468,6 +474,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: retryPolicy, // Limited retries
             serverTimeout: nil,
             keepAliveInterval: nil,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 
@@ -561,6 +568,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: []), // No retry
             serverTimeout: nil,
             keepAliveInterval: keepAliveInterval,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 
@@ -611,7 +619,7 @@ final class HubConnectionTests: XCTestCase {
         await self.initForStatefulReconnect();
 
         await mockConnection.disconnect { disconnectExpectation.fulfill() }
-        await mockConnection.resend { resendExpectation.fulfill() }
+        _ = await mockConnection.resend { resendExpectation.fulfill() }
 
         await fulfillment(of: [disconnectExpectation, resendExpectation], timeout: 0.1)
 
@@ -635,7 +643,7 @@ final class HubConnectionTests: XCTestCase {
         await whenTaskWithTimeout(Task { try await hubConnectionForStatefulReconnect.send(method: "test", arguments: 11) }, timeout: 0.1);
 
         await mockConnection.disconnect { disconnectExpectation.fulfill() }
-        await mockConnection.resend { resendExpectation.fulfill() }
+        _ = await mockConnection.resend { resendExpectation.fulfill() }
         await fulfillment(of: [disconnectExpectation], timeout: 1)
         await fulfillment(of: [resendExpectation], timeout: 1)
 
@@ -684,7 +692,7 @@ final class HubConnectionTests: XCTestCase {
         // Send while disconnected, should wait until resend completes
         let sendDoneExpectation = XCTestExpectation(description: "sendDone should be true")
     
-        await mockConnection.resend { resendExpectation.fulfill() }
+        _ = await mockConnection.resend { resendExpectation.fulfill() }
         let sendTask = Task {
             try await hubConnectionForStatefulReconnect.send(method: "method2", arguments: 222)
             sendDoneExpectation.fulfill()
@@ -740,7 +748,7 @@ final class HubConnectionTests: XCTestCase {
         let resendExpectation = XCTestExpectation(description: "reconnect should be called")
 
         await mockConnection.disconnect { disconnectExpectation.fulfill() }
-        await mockConnection.resend { resendExpectation.fulfill() }
+        _ = await mockConnection.resend { resendExpectation.fulfill() }
         await fulfillment(of: [disconnectExpectation, resendExpectation], timeout: 1)
 
         // Now only the last message should be resent, and a new SequenceMessage should be sent
@@ -856,7 +864,7 @@ final class HubConnectionTests: XCTestCase {
         let resendExpectation = XCTestExpectation(description: "resend should be called")
         
         await mockConnection.disconnect { disconnectExpectation.fulfill() }
-        await mockConnection.resend { resendExpectation.fulfill() }
+        _ = await mockConnection.resend { resendExpectation.fulfill() }
         
         await fulfillment(of: [disconnectExpectation, resendExpectation], timeout: 1.0)
         
@@ -910,7 +918,7 @@ final class HubConnectionTests: XCTestCase {
         let resendExpectation = XCTestExpectation(description: "resend should be called")
         
         await mockConnection.disconnect { disconnectExpectation.fulfill() }
-        await mockConnection.resend { resendExpectation.fulfill() }
+        _ = await mockConnection.resend { resendExpectation.fulfill() }
         
         await fulfillment(of: [disconnectExpectation, resendExpectation], timeout: 1.0)
         
@@ -949,6 +957,7 @@ final class HubConnectionTests: XCTestCase {
             retryPolicy: DefaultRetryPolicy(retryDelays: []), // No retry
             serverTimeout: 0.1,
             keepAliveInterval: 99,
+            invocationTimeout: nil,
             statefulReconnectBufferSize: nil
         )
 
@@ -1138,7 +1147,7 @@ final class HubConnectionTests: XCTestCase {
         }
 
         let invokeTask = Task {
-            let s: Int = try await self.hubConnection.invoke(method: "testMethod", arguments: "arg1", "arg2")
+            let _: Int = try await self.hubConnection.invoke(method: "testMethod", arguments: "arg1", "arg2")
         }
 
         await fulfillment(of: [invokeExpectation], timeout: 1.0)
@@ -1337,6 +1346,203 @@ final class HubConnectionTests: XCTestCase {
 
     func whenTaskWithTimeout(_ task: Task<Void, Error>, timeout: TimeInterval) async -> Void {
         return await whenTaskWithTimeout({ try await task.value }, timeout: timeout)
+    }
+
+    func testInvoke_TaskCancellation_CancelsInvocation() async throws {
+        let expectation = XCTestExpectation(description: "send() should be called")
+        let cancelExpectation = XCTestExpectation(description: "cancel message should be sent")
+        var invocationMessageSent = false
+        
+        mockConnection.onSend = { data in
+            do {
+                let messages = try self.hubProtocol.parseMessages(input: data, binder: TestInvocationBinder(binderTypes: [Int.self]))
+                for message in messages {
+                    if message is InvocationMessage {
+                        invocationMessageSent = true
+                        expectation.fulfill()
+                    } else if message is CancelInvocationMessage {
+                        cancelExpectation.fulfill()
+                    }
+                }
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+        
+        let startTask = Task {
+            try await hubConnection.start()
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        await hubConnection.processIncomingData(.string(successHandshakeResponse))
+        await whenTaskWithTimeout(startTask, timeout: 1.0)
+        
+        let invokeTask = Task {
+            try await hubConnection.invoke(method: "TestMethod", arguments: 42) as Int
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertTrue(invocationMessageSent)
+        
+        invokeTask.cancel()
+        
+        let error = await whenTaskThrowsTimeout({ _ = try await invokeTask.value }, timeout: 1.0)
+        XCTAssertNotNil(error)
+        XCTAssertTrue(error is CancellationError)
+        
+        await fulfillment(of: [cancelExpectation], timeout: 1.0)
+    }
+    
+    func testInvoke_ConnectionCloseDuringInvoke_ThrowsConnectionAborted() async throws {
+        let expectation = XCTestExpectation(description: "send() should be called")
+        
+        mockConnection.onSend = { data in
+            expectation.fulfill()
+        }
+        
+        let startTask = Task {
+            try await hubConnection.start()
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        await hubConnection.processIncomingData(.string(successHandshakeResponse))
+        await whenTaskWithTimeout(startTask, timeout: 1.0)
+        
+        let invokeTask = Task {
+            try await hubConnection.invoke(method: "TestMethod", arguments: 42) as Int
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        
+        await hubConnection.stop()
+        
+        let error = await whenTaskThrowsTimeout({ _ = try await invokeTask.value }, timeout: 1.0)
+        XCTAssertNotNil(error)
+        if let signalRError = error as? SignalRError {
+            XCTAssertEqual(signalRError, SignalRError.connectionAborted)
+        } else {
+            XCTFail("Expected SignalRError.connectionAborted")
+        }
+    }
+    
+    func testInvoke_StopDuringInvoke_CancelsAllPendingInvocations() async throws {
+        let expectation = XCTestExpectation(description: "send() should be called")
+        expectation.expectedFulfillmentCount = 3
+        
+        mockConnection.onSend = { data in
+            expectation.fulfill()
+        }
+        
+        let startTask = Task {
+            try await hubConnection.start()
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        await hubConnection.processIncomingData(.string(successHandshakeResponse))
+        await whenTaskWithTimeout(startTask, timeout: 1.0)
+        
+        let invokeTask1 = Task {
+            try await hubConnection.invoke(method: "TestMethod1", arguments: 1) as Int
+        }
+        
+        let invokeTask2 = Task {
+            try await hubConnection.invoke(method: "TestMethod2", arguments: 2) as Int
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        
+        await hubConnection.stop()
+        
+        let error1 = await whenTaskThrowsTimeout({ _ = try await invokeTask1.value }, timeout: 1.0)
+        let error2 = await whenTaskThrowsTimeout({ _ = try await invokeTask2.value }, timeout: 1.0)
+        
+        XCTAssertNotNil(error1)
+        XCTAssertNotNil(error2)
+        
+        if let signalRError1 = error1 as? SignalRError {
+            XCTAssertEqual(signalRError1, SignalRError.connectionAborted)
+        } else {
+            XCTFail("Expected SignalRError.connectionAborted for first invocation")
+        }
+        
+        if let signalRError2 = error2 as? SignalRError {
+            XCTAssertEqual(signalRError2, SignalRError.connectionAborted)
+        } else {
+            XCTFail("Expected SignalRError.connectionAborted for second invocation")
+        }
+    }
+    
+    func testInvoke_WithTimeout_ThrowsTimeoutError() async throws {
+        let hubConnectionWithTimeout = HubConnection(
+            connection: mockConnection,
+            logger: Logger(logLevel: .debug, logHandler: logHandler),
+            hubProtocol: hubProtocol,
+            retryPolicy: DefaultRetryPolicy(retryDelays: []),
+            serverTimeout: nil,
+            keepAliveInterval: nil,
+            invocationTimeout: 0.5,
+            statefulReconnectBufferSize: nil
+        )
+        
+        let expectation = XCTestExpectation(description: "send() should be called")
+        
+        mockConnection.onSend = { data in
+            expectation.fulfill()
+        }
+        
+        let startTask = Task {
+            try await hubConnectionWithTimeout.start()
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        await hubConnectionWithTimeout.processIncomingData(.string(successHandshakeResponse))
+        await whenTaskWithTimeout(startTask, timeout: 1.0)
+        
+        let invokeTask = Task {
+            try await hubConnectionWithTimeout.invoke(method: "TestMethod", arguments: 42) as Int
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        
+        let error = await whenTaskThrowsTimeout({ _ = try await invokeTask.value }, timeout: 1.0)
+        XCTAssertNotNil(error)
+        
+        if let signalRError = error as? SignalRError,
+           case .invocationTimeout(let timeout) = signalRError {
+            XCTAssertEqual(timeout, 0.5)
+        } else {
+            XCTFail("Expected SignalRError.invocationTimeout")
+        }
+    }
+    
+    func testInvoke_SuccessfulCompletion_CleansUpReturnTypes() async throws {
+        let expectation = XCTestExpectation(description: "send() should be called")
+        
+        mockConnection.onSend = { data in
+            expectation.fulfill()
+        }
+        
+        let startTask = Task {
+            try await hubConnection.start()
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        await hubConnection.processIncomingData(.string(successHandshakeResponse))
+        await whenTaskWithTimeout(startTask, timeout: 1.0)
+        
+        let invokeTask = Task {
+            try await hubConnection.invoke(method: "TestMethod", arguments: 42) as Int
+        }
+        
+        await fulfillment(of: [expectation], timeout: 1.0)
+        
+        let completionMessage = """
+        {"type":3,"invocationId":"1","result":100}\u{1e}
+        """
+        await hubConnection.processIncomingData(.string(completionMessage))
+        
+        let result = try await invokeTask.value
+        XCTAssertEqual(result, 100)
     }
 
     func whenTaskWithTimeout(_ task: Task<Void, Never>, timeout: TimeInterval) async -> Void {
